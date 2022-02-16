@@ -1,28 +1,58 @@
 import logging
 
-from django.shortcuts import render, redirect
-from django.contrib.auth.models import User
+from django.core.paginator import Paginator
+from django.db.models import Sum, F
+from django.shortcuts import render, get_object_or_404, redirect
 
-from deal.forms import RegisterForm
+from deal.forms import ProductFiltersForm
+from deal.models import Product, Purchase
 
 logger = logging.getLogger(__name__)
 
 
-def register(request):
+def product_list(request):
+    products = Product.objects.all()
+    filters_form = ProductFiltersForm(request.GET)
+
+    if filters_form.is_valid():
+        cost__gt = filters_form.cleaned_data["cost__gt"]
+        if cost__gt:
+            products = products.filter(cost__gt=cost__gt)
+
+        cost__lt = filters_form.cleaned_data["cost__lt"]
+        if cost__lt:
+            products = products.filter(cost__lt=cost__lt)
+
+        order_by = filters_form.cleaned_data["order_by"]
+        if order_by:
+            if order_by == "cost_asc":
+                products = products.order_by("cost")
+            if order_by == "cost_desc":
+                products = products.order_by("-cost")
+            if order_by == "max_count":
+                products = products.annotate(total_count=Sum("purchases__count")).order_by(
+                    "-total_count"
+                )
+            if order_by == "max_price":
+                products = products.annotate(
+                    total_cost=Sum("purchases__count") * F("cost")
+                ).order_by("-total_cost")
+
+        status = filters_form.cleaned_data["status"]
+        if status:
+            products = products.filter(status=status)
+
+    paginator = Paginator(products, 30)
+    page_number = request.GET.get("page")
+    products = paginator.get_page(page_number)
+
+    return render(request, "products/list.html", {"filters_form": filters_form, "products": products})
+
+
+def product_details_view(request, product_id):
+    product = get_object_or_404(Product, id=product_id)
     if request.method == "POST":
-        form = RegisterForm(request.POST)
-        if form.is_valid():
-            # Process validated data
-            logger.info(form.cleaned_data)
-            user = User(
-                username=form.cleaned_data['email'],
-                email=form.cleaned_data['email'],
-                first_name=form.cleaned_data['first_name'],
-                last_name=form.cleaned_data['last_name'],
-            )
-            user.set_password(form.cleaned_data['password'])
-            user.save()
-            return redirect("/")
-    else:
-        form = RegisterForm()
-    return render(request, "register.html", {"form": form})
+        if request.POST.get("count"):
+            Purchase.objects.create(product=product, user=request.user, count=request.POST.get("count"))
+            return redirect("product_details_view", product_id=product_id)
+    return render(request, "products/details.html", {"product": product})
